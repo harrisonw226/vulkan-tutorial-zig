@@ -1,0 +1,33 @@
+.{
+
+    //
+
+    .name = "triangle",
+
+    .version = "0.0.0",
+
+    .minimum_zig_version = "0.14.0",
+
+    .dependencies = .{
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig/?ref=HEAD#1fd5a6e217dfcc7e4406d449924a1feb1ecffbb9",
+            .hash = "122096b4021c4bb35d373d589a31237e2ac834969ea50401d73cc50780aaec8ea367",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/v1.3.283.tar.gz",
+            .hash = "1220a7e73d72a0d56bc2a65f9d8999a7c019e42260a0744c408d1cded111bc205e10",
+        },
+        .@"mach-glfw" = .{
+            .url = "https://pkg.machengine.org/mach-glfw/affdd6ae6f2ac2c3b9162784bdad345c561eeeea.tar.gz",
+            .hash = "122022ea6df16700e521078c20d7d01f894c6f967e6c6ce1ea166426b4fc61667de3",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+
+        //"LICENSE",
+        //"README.md",
+    },
+}
