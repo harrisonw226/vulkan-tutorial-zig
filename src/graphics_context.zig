@@ -39,6 +39,15 @@ pub const GraphicsContext = struct {
 
     instance: Instance,
 
+    surface: vk.SurfaceKHR,
+    pdev: vk.PhysicalDevice,
+    props: vk.PhysicalDeviceProperties,
+    mem_props: vk.PhysicalDeviceMemoryProperties,
+
+    dev: Device,
+    graphics_queue: Queue,
+    present_queue: Queue,
+
     enable_validation: bool,
     debug_messenger: vk.DebugUtilsMessengerEXT,
 
@@ -96,6 +105,9 @@ pub const GraphicsContext = struct {
                 .pfn_user_callback = debugCallback,
             }, null);
         }
+
+        self.surface = try createSurface(self.instance, window);
+        errdefer self.instance.destroySurfaceKHR(self.surface, null);
 
         return self;
     }
@@ -161,21 +173,55 @@ pub const GraphicsContext = struct {
             }
         }
     }
-    fn debugCallback(
-        message_severity: vk.DebugUtilsMessageSeverityFlagsEXT,
-        message_types: vk.DebugUtilsMessageTypeFlagsEXT,
-        p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
-        p_user_data: ?*anyopaque,
-    ) callconv(vk.vulkan_call_conv) vk.Bool32 {
-        _ = message_severity;
-        _ = message_types;
-        _ = p_user_data;
-        b: {
-            const msg = (p_callback_data orelse break :b).p_message orelse break :b;
-            std.log.scoped(.validation).warn("{s}", .{msg});
-            return vk.FALSE;
-        }
-        std.log.scoped(.validation).warn("unrecognized validation layer debug message", .{});
-        return vk.FALSE;
+};
+
+pub const Queue = struct {
+    handle: vk.Queue,
+    family: u32,
+
+    fn init(device: Device, family: u32) Queue {
+        return .{
+            .handle = device.getDeviceQueue(family, 0),
+            .family = family,
+        };
     }
 };
+
+const QueueAllocation = struct {
+    graphics_family: u32,
+    present_family: u32,
+};
+
+const DeviceCandidate = struct {
+    pdev: vk.PhysicalDevice,
+    props: vk.PhysicalDeviceProperties,
+    queues: QueueAllocation,
+};
+
+fn pickPhysicalDevice(instance: Instance, allocator: Allocator, surface: vk.SurfaceKHR) !DeviceCandidate {}
+
+fn createSurface(instance: Instance, window: glfw.Window) !vk.SurfaceKHR {
+    var surface: vk.SurfaceKHR = undefined;
+    if (glfw.createWindowSurface(instance.handle, window, null, &surface) != .success) {
+        return error.SurfaceInitFailed;
+    }
+    return surface;
+}
+
+fn debugCallback(
+    message_severity: vk.DebugUtilsMessageSeverityFlagsEXT,
+    message_types: vk.DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
+    p_user_data: ?*anyopaque,
+) callconv(vk.vulkan_call_conv) vk.Bool32 {
+    _ = message_severity;
+    _ = message_types;
+    _ = p_user_data;
+    b: {
+        const msg = (p_callback_data orelse break :b).p_message orelse break :b;
+        std.log.scoped(.validation).warn("{s}", .{msg});
+        return vk.FALSE;
+    }
+    std.log.scoped(.validation).warn("unrecognized validation layer debug message", .{});
+    return vk.FALSE;
+}
