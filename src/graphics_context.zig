@@ -20,6 +20,7 @@ const apis: []const vk.ApiInfo = &.{
     vk.features.version_1_0,
     vk.extensions.khr_surface,
     vk.extensions.khr_swapchain,
+    vk.extensions.ext_debug_utils,
 };
 
 /// Next, pass the `apis` to the wrappers to create dispatch tables.
@@ -31,16 +32,20 @@ const DeviceDispatch = vk.DeviceWrapper(apis);
 const Instance = vk.InstanceProxy(apis);
 const Device = vk.DeviceProxy(apis);
 
-pub const GrahicsContext = struct {
+pub const GraphicsContext = struct {
     allocator: Allocator,
 
     vkb: BaseDispatch,
 
     instance: Instance,
 
-    pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window) !GrahicsContext {
-        var self: GrahicsContext = undefined;
+    enable_validation: bool,
+    debug_messenger: vk.DebugUtilsMessengerEXT,
+
+    pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window, enable_validation_layers: bool) !GraphicsContext {
+        var self: GraphicsContext = undefined;
         _ = window;
+        self.enable_validation = enable_validation_layers;
         self.allocator = allocator;
         self.vkb = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
 
@@ -55,15 +60,18 @@ pub const GrahicsContext = struct {
         var instance_exts = std.ArrayList([*:0]const u8).init(self.allocator);
         defer instance_exts.deinit();
 
-        for (instance_exts.items) |ext| {
-            std.log.info("instance ext: {s}", .{ext});
-        }
+        var instance_layers = std.ArrayList([*:0]const u8).init(self.allocator);
+        defer instance_layers.deinit();
 
         try checkInstanceExtensions(self, &instance_exts);
+        try checkInstanceLayers(self, &instance_layers);
+
         const instance = try self.vkb.createInstance(&.{
             .p_application_info = &app_info,
             .enabled_extension_count = @intCast(instance_exts.items.len),
             .pp_enabled_extension_names = @ptrCast(instance_exts.items),
+            .enabled_layer_count = @intCast(instance_layers.items.len),
+            .pp_enabled_layer_names = @ptrCast(instance_layers.items),
         }, null);
 
         const vki = try allocator.create(InstanceDispatch);
@@ -73,15 +81,56 @@ pub const GrahicsContext = struct {
         self.instance = Instance.init(instance, vki);
         errdefer self.instance.destroyInstance(null);
 
+        if (enable_validation_layers) {
+            self.debug_messenger = try self.instance.createDebugUtilsMessengerEXT(&.{
+                .message_severity = .{
+                    .error_bit_ext = true,
+                    .warning_bit_ext = true,
+                },
+                .message_type = .{
+                    .general_bit_ext = true,
+                    .validation_bit_ext = true,
+                    .performance_bit_ext = true,
+                    .device_address_binding_bit_ext = true,
+                },
+                .pfn_user_callback = debugCallback,
+            }, null);
+        }
+
         return self;
     }
 
-    pub fn deinit(self: GrahicsContext) void {
+    pub fn deinit(self: GraphicsContext) void {
+        self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
         self.instance.destroyInstance(null);
         self.allocator.destroy(self.instance.wrapper);
     }
 
-    fn checkInstanceExtensions(self: GrahicsContext, instance_exts: *std.ArrayList([*:0]const u8)) !void {
+    fn checkInstanceLayers(self: GraphicsContext, instance_layers: *std.ArrayList([*:0]const u8)) !void {
+        var count: u32 = 0;
+        _ = try self.vkb.enumerateInstanceLayerProperties(&count, null);
+        const available_layers = try self.allocator.alloc(vk.LayerProperties, count);
+        defer self.allocator.free(available_layers);
+        _ = try self.vkb.enumerateInstanceLayerProperties(&count, available_layers.ptr);
+
+        if (self.enable_validation) {
+            try instance_layers.append("VK_LAYER_KHRONOS_validation");
+        }
+
+        for (instance_layers.items) |reqs| {
+            for (available_layers) |ext| {
+                const len = std.mem.indexOfScalar(u8, &ext.layer_name, 0).?;
+                const layer_name = ext.layer_name[0..len];
+                if (std.mem.eql(u8, layer_name, std.mem.span(reqs))) {
+                    std.log.info("layer: {s} <---- Required", .{layer_name});
+                } else {
+                    std.log.info("layer: {s}", .{layer_name});
+                }
+            }
+        }
+    }
+
+    fn checkInstanceExtensions(self: GraphicsContext, instance_exts: *std.ArrayList([*:0]const u8)) !void {
         // Gets available extensions
         var count: u32 = 0;
         _ = try self.vkb.enumerateInstanceExtensionProperties(null, &count, null);
@@ -96,17 +145,37 @@ pub const GrahicsContext = struct {
         };
 
         try instance_exts.appendSlice(glfw_exts);
+        if (self.enable_validation) {
+            try instance_exts.append("VK_EXT_debug_utils");
+        }
 
         for (instance_exts.items) |reqs| {
             for (available_exts) |ext| {
                 const len = std.mem.indexOfScalar(u8, &ext.extension_name, 0).?;
                 const ext_name = ext.extension_name[0..len];
                 if (std.mem.eql(u8, ext_name, std.mem.span(reqs))) {
-                    std.log.info("ext: {s} <---- Required", .{ext.extension_name});
+                    std.log.info("ext: {s} <---- Required", .{ext_name});
                 } else {
-                    std.log.info("ext: {s}", .{ext.extension_name});
+                    std.log.info("ext: {s}", .{ext_name});
                 }
             }
         }
+    }
+    fn debugCallback(
+        message_severity: vk.DebugUtilsMessageSeverityFlagsEXT,
+        message_types: vk.DebugUtilsMessageTypeFlagsEXT,
+        p_callback_data: ?*const vk.DebugUtilsMessengerCallbackDataEXT,
+        p_user_data: ?*anyopaque,
+    ) callconv(vk.vulkan_call_conv) vk.Bool32 {
+        _ = message_severity;
+        _ = message_types;
+        _ = p_user_data;
+        b: {
+            const msg = (p_callback_data orelse break :b).p_message orelse break :b;
+            std.log.scoped(.validation).warn("{s}", .{msg});
+            return vk.FALSE;
+        }
+        std.log.scoped(.validation).warn("unrecognized validation layer debug message", .{});
+        return vk.FALSE;
     }
 };

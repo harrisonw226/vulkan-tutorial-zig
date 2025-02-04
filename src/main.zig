@@ -1,6 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const glfw = @import("mach-glfw");
-const GraphicsConstext = @import("graphics_context.zig").GrahicsContext;
+const GraphicsConstext = @import("graphics_context.zig").GraphicsContext;
 
 const Allocator = std.mem.Allocator;
 
@@ -8,6 +9,7 @@ const app_name = "vulkan zig example";
 
 const HEIGHT = 600;
 const WIDTH = 800;
+const enable_validation_layers = builtin.mode == .Debug;
 
 /// Default GLFW error handling callback
 fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
@@ -32,7 +34,7 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    const gc = try GraphicsConstext.init(allocator, app_name, window);
+    const gc = try GraphicsConstext.init(allocator, app_name, window, enable_validation_layers);
     defer gc.deinit();
 
     while (!window.shouldClose()) {
