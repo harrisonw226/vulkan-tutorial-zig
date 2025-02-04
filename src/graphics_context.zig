@@ -52,20 +52,14 @@ pub const GrahicsContext = struct {
             .api_version = vk.API_VERSION_1_3,
         };
 
-        const glfw_exts = glfw.getRequiredInstanceExtensions() orelse return blk: {
-            const err = glfw.mustGetError();
-            std.log.err("failed to get required vulkan instance extensions: error {s}", .{err.description});
-            break :blk err.error_code;
-        };
-
-        var instance_exts = try std.ArrayList([*:0]const u8).initCapacity(self.allocator, glfw_exts.len + 1);
+        var instance_exts = std.ArrayList([*:0]const u8).init(self.allocator);
         defer instance_exts.deinit();
-        try instance_exts.appendSlice(glfw_exts);
 
         for (instance_exts.items) |ext| {
             std.log.info("instance ext: {s}", .{ext});
         }
 
+        try checkInstanceExtensions(self, &instance_exts);
         const instance = try self.vkb.createInstance(&.{
             .p_application_info = &app_info,
             .enabled_extension_count = @intCast(instance_exts.items.len),
@@ -85,5 +79,34 @@ pub const GrahicsContext = struct {
     pub fn deinit(self: GrahicsContext) void {
         self.instance.destroyInstance(null);
         self.allocator.destroy(self.instance.wrapper);
+    }
+
+    fn checkInstanceExtensions(self: GrahicsContext, instance_exts: *std.ArrayList([*:0]const u8)) !void {
+        // Gets available extensions
+        var count: u32 = 0;
+        _ = try self.vkb.enumerateInstanceExtensionProperties(null, &count, null);
+        const available_exts = try self.allocator.alloc(vk.ExtensionProperties, count);
+        defer self.allocator.free(available_exts);
+        _ = try self.vkb.enumerateInstanceExtensionProperties(null, &count, available_exts.ptr);
+        // Gets required GLFW extensions
+        const glfw_exts = glfw.getRequiredInstanceExtensions() orelse return blk: {
+            const err = glfw.mustGetError();
+            std.log.err("failed to get required vulkan instance extensions: error {s}", .{err.description});
+            break :blk err.error_code;
+        };
+
+        try instance_exts.appendSlice(glfw_exts);
+
+        for (instance_exts.items) |reqs| {
+            for (available_exts) |ext| {
+                const len = std.mem.indexOfScalar(u8, &ext.extension_name, 0).?;
+                const ext_name = ext.extension_name[0..len];
+                if (std.mem.eql(u8, ext_name, std.mem.span(reqs))) {
+                    std.log.info("ext: {s} <---- Required", .{ext.extension_name});
+                } else {
+                    std.log.info("ext: {s}", .{ext.extension_name});
+                }
+            }
+        }
     }
 };
