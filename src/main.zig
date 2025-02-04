@@ -1,5 +1,6 @@
 const std = @import("std");
 const glfw = @import("mach-glfw");
+const GraphicsConstext = @import("graphics_context.zig").GrahicsContext;
 
 const Allocator = std.mem.Allocator;
 
@@ -25,6 +26,14 @@ pub fn main() !void {
         return glfw.getErrorCode();
     };
     defer window.destroy();
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    const allocator = gpa.allocator();
+
+    const gc = try GraphicsConstext.init(allocator, app_name, window);
+    defer gc.deinit();
 
     while (!window.shouldClose()) {
         glfw.pollEvents();
