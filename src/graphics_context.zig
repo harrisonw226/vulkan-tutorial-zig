@@ -53,7 +53,6 @@ pub const GraphicsContext = struct {
 
     pub fn init(allocator: Allocator, app_name: [*:0]const u8, window: glfw.Window, enable_validation_layers: bool) !GraphicsContext {
         var self: GraphicsContext = undefined;
-        _ = window;
         self.enable_validation = enable_validation_layers;
         self.allocator = allocator;
         self.vkb = try BaseDispatch.load(@as(vk.PfnGetInstanceProcAddr, @ptrCast(&glfw.getInstanceProcAddress)));
@@ -109,10 +108,15 @@ pub const GraphicsContext = struct {
         self.surface = try createSurface(self.instance, window);
         errdefer self.instance.destroySurfaceKHR(self.surface, null);
 
+        const candidate = try pickPhysicalDevice(self.instance, allocator, self.surface);
+        self.pdev = candidate.pdev;
+        self.props = candidate.props;
+
         return self;
     }
 
     pub fn deinit(self: GraphicsContext) void {
+        self.instance.destroySurfaceKHR(self.surface, null);
         self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
         self.instance.destroyInstance(null);
         self.allocator.destroy(self.instance.wrapper);
@@ -198,14 +202,100 @@ const DeviceCandidate = struct {
     queues: QueueAllocation,
 };
 
-fn pickPhysicalDevice(instance: Instance, allocator: Allocator, surface: vk.SurfaceKHR) !DeviceCandidate {}
+fn pickPhysicalDevice(instance: Instance, allocator: Allocator, surface: vk.SurfaceKHR) !DeviceCandidate {
+    const pdevs = try instance.enumeratePhysicalDevicesAlloc(allocator);
+    defer allocator.free(pdevs);
+
+    for (pdevs) |pdev| {
+        if (try checkSuitable(instance, pdev, allocator, surface)) |candidate| {
+            return candidate;
+        }
+    }
+    return error.NoSuitbaleDevices;
+}
+
+fn checkSuitable(instance: Instance, pdev: vk.PhysicalDevice, allocator: Allocator, surface: vk.SurfaceKHR) !?DeviceCandidate {
+    if (!try checkExtensionSupport(instance, pdev, allocator)) {
+        std.log.err("missing extensions", .{});
+        return null;
+    }
+
+    if (!try checkSurfaceSupport(instance, pdev, surface)) {
+        std.log.err("missing surface support", .{});
+        return null;
+    }
+
+    if (try allocateQueues(instance, pdev, allocator, surface)) |allocation| {
+        const props = instance.getPhysicalDeviceProperties(pdev);
+        return DeviceCandidate{
+            .pdev = pdev,
+            .props = props,
+            .queues = allocation,
+        };
+    }
+    std.log.err("failed to allocate queues", .{});
+    return null;
+}
+
+fn allocateQueues(instance: Instance, pdev: vk.PhysicalDevice, allocator: Allocator, surface: vk.SurfaceKHR) !?QueueAllocation {
+    const families = try instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(pdev, allocator);
+    defer allocator.free(families);
+
+    var graphics_family: ?u32 = null;
+    var present_family: ?u32 = null;
+
+    for (families, 0..) |properites, i| {
+        const family: u32 = @intCast(i);
+
+        if (graphics_family == null and properites.queue_flags.graphics_bit) {
+            graphics_family = family;
+        }
+        if (present_family == null and (try instance.getPhysicalDeviceSurfaceSupportKHR(pdev, family, surface)) == vk.TRUE) {
+            present_family = family;
+        }
+
+        if (graphics_family != null and present_family != null) {
+            return QueueAllocation{
+                .graphics_family = graphics_family.?,
+                .present_family = present_family.?,
+            };
+        }
+    }
+    return null;
+}
 
 fn createSurface(instance: Instance, window: glfw.Window) !vk.SurfaceKHR {
     var surface: vk.SurfaceKHR = undefined;
-    if (glfw.createWindowSurface(instance.handle, window, null, &surface) != .success) {
+    if (glfw.createWindowSurface(instance.handle, window, null, &surface) != @intFromEnum(vk.Result.success)) {
         return error.SurfaceInitFailed;
     }
     return surface;
+}
+
+fn checkSurfaceSupport(instance: Instance, pdev: vk.PhysicalDevice, surface: vk.SurfaceKHR) !bool {
+    var format_count: u32 = undefined;
+    _ = try instance.getPhysicalDeviceSurfaceFormatsKHR(pdev, surface, &format_count, null);
+
+    var present_mode_count: u32 = undefined;
+    _ = try instance.getPhysicalDeviceSurfacePresentModesKHR(pdev, surface, &present_mode_count, null);
+
+    return format_count > 0 and present_mode_count > 0;
+}
+
+fn checkExtensionSupport(instance: Instance, pdev: vk.PhysicalDevice, allocator: Allocator) !bool {
+    const propsv = try instance.enumerateDeviceExtensionPropertiesAlloc(pdev, null, allocator);
+    defer allocator.free(propsv);
+
+    for (required_device_extensions) |ext| {
+        for (propsv) |props| {
+            if (std.mem.eql(u8, std.mem.span(ext), std.mem.sliceTo(&props.extension_name, 0))) {
+                break;
+            }
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn debugCallback(
