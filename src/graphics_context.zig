@@ -112,13 +112,31 @@ pub const GraphicsContext = struct {
         self.pdev = candidate.pdev;
         self.props = candidate.props;
 
+        const dev = try initialiseCandidate(self.instance, candidate);
+
+        const vkd = try allocator.create(DeviceDispatch);
+        errdefer allocator.destroy(vkd);
+
+        vkd.* = try DeviceDispatch.load(dev, self.instance.wrapper.dispatch.vkGetDeviceProcAddr);
+        self.dev = Device.init(dev, vkd);
+
+        errdefer self.dev.destroyDevice(null);
+
+        self.graphics_queue = Queue.init(self.dev, candidate.queues.graphics_family);
+        self.present_queue = Queue.init(self.dev, candidate.queues.present_family);
+
+        self.mem_props = self.instance.getPhysicalDeviceMemoryProperties(self.pdev);
+
         return self;
     }
 
     pub fn deinit(self: GraphicsContext) void {
+        self.dev.destroyDevice(null);
         self.instance.destroySurfaceKHR(self.surface, null);
         self.instance.destroyDebugUtilsMessengerEXT(self.debug_messenger, null);
         self.instance.destroyInstance(null);
+
+        self.allocator.destroy(self.dev.wrapper);
         self.allocator.destroy(self.instance.wrapper);
     }
 
@@ -201,6 +219,34 @@ const DeviceCandidate = struct {
     props: vk.PhysicalDeviceProperties,
     queues: QueueAllocation,
 };
+
+fn initialiseCandidate(instance: Instance, candidate: DeviceCandidate) !vk.Device {
+    const priority = [_]f32{1};
+    const qci = [_]vk.DeviceQueueCreateInfo{
+        .{
+            .queue_family_index = candidate.queues.graphics_family,
+            .queue_count = 1,
+            .p_queue_priorities = &priority,
+        },
+        .{
+            .queue_family_index = candidate.queues.present_family,
+            .queue_count = 1,
+            .p_queue_priorities = &priority,
+        },
+    };
+
+    const queue_count: u32 = if (candidate.queues.graphics_family == candidate.queues.present_family)
+        1
+    else
+        2;
+
+    return try instance.createDevice(candidate.pdev, &.{
+        .queue_create_info_count = queue_count,
+        .p_queue_create_infos = &qci,
+        .enabled_extension_count = required_device_extensions.len,
+        .pp_enabled_extension_names = @ptrCast(&required_device_extensions),
+    }, null);
+}
 
 fn pickPhysicalDevice(instance: Instance, allocator: Allocator, surface: vk.SurfaceKHR) !DeviceCandidate {
     const pdevs = try instance.enumeratePhysicalDevicesAlloc(allocator);
