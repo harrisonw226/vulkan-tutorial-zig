@@ -1,14 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const vk = @import("vulkan");
 const glfw = @import("mach-glfw");
+const Swapchain = @import("swapchain.zig").Swapchain;
 const GraphicsConstext = @import("graphics_context.zig").GraphicsContext;
 
 const Allocator = std.mem.Allocator;
 
 const app_name = "vulkan zig example";
 
-const HEIGHT = 600;
-const WIDTH = 800;
+var extent = vk.Extent2D{ .width = 800, .height = 600 };
 const enable_validation_layers = builtin.mode == .Debug;
 
 /// Default GLFW error handling callback
@@ -23,7 +24,7 @@ pub fn main() !void {
     }
     defer glfw.terminate();
 
-    const window = glfw.Window.create(WIDTH, HEIGHT, app_name, null, null, .{ .client_api = .no_api }) orelse {
+    const window = glfw.Window.create(extent.width, extent.height, app_name, null, null, .{ .client_api = .no_api }) orelse {
         std.log.err("failed to create GLFW window: {?s}", .{glfw.getErrorString()});
         return glfw.getErrorCode();
     };
@@ -36,6 +37,9 @@ pub fn main() !void {
 
     const gc = try GraphicsConstext.init(allocator, app_name, window, enable_validation_layers);
     defer gc.deinit();
+
+    var swapchain = try Swapchain.init(&gc, allocator, extent);
+    defer swapchain.deinit();
 
     while (!window.shouldClose()) {
         glfw.pollEvents();
