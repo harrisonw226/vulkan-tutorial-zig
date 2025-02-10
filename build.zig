@@ -35,6 +35,28 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
+    const vert_cmd = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.3",
+        "-o",
+    });
+    const vert_spv = vert_cmd.addOutputFileArg("vert.spv");
+    vert_cmd.addFileArg(b.path("src/shaders/triangle.vert"));
+    exe.root_module.addAnonymousImport("vertex_shader", .{
+        .root_source_file = vert_spv,
+    });
+
+    const frag_cmd = b.addSystemCommand(&.{
+        "glslc",
+        "--target-env=vulkan1.3",
+        "-o",
+    });
+    const frag_spv = frag_cmd.addOutputFileArg("frag.spv");
+    frag_cmd.addFileArg(b.path("src/shaders/triangle.frag"));
+    exe.root_module.addAnonymousImport("fragment_shader", .{
+        .root_source_file = frag_spv,
+    });
+
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
