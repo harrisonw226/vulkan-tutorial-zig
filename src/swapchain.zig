@@ -104,14 +104,14 @@ pub const Swapchain = struct {
         };
     }
 
-    fn deinitexeptswapchain(self: Swapchain) void {
+    fn deinitExceptSwapchain(self: Swapchain) void {
         for (self.swap_images) |si| si.deinit(self.gc);
         self.allocator.free(self.swap_images);
         self.gc.dev.destroySemaphore(self.next_image_acquired, null);
     }
 
     pub fn deinit(self: Swapchain) void {
-        self.deinitexeptswapchain();
+        self.deinitExceptSwapchain();
         self.gc.dev.destroySwapchainKHR(self.handle, null);
     }
 

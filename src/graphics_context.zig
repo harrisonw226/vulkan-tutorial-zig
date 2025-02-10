@@ -33,6 +33,8 @@ const Instance = vk.InstanceProxy(apis);
 const Device = vk.DeviceProxy(apis);
 
 pub const GraphicsContext = struct {
+    pub const CommandBuffer = vk.CommandBufferProxy(apis);
+
     allocator: Allocator,
 
     vkb: BaseDispatch,
@@ -194,6 +196,23 @@ pub const GraphicsContext = struct {
                 }
             }
         }
+    }
+
+    pub fn findMemoryTypeIndex(self: GraphicsContext, memory_type_bits: u32, flags: vk.MemoryPropertyFlags) !u32 {
+        for (self.mem_props.memory_types[0..self.mem_props.memory_type_count], 0..) |mem_type, i| {
+            if (memory_type_bits & (@as(u32, 1) << @truncate(i)) != 0 and mem_type.property_flags.contains(flags)) {
+                return @truncate(i);
+            }
+        }
+
+        return error.NoSuitableMemoryType;
+    }
+
+    pub fn allocate(self: GraphicsContext, requirements: vk.MemoryRequirements, flags: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+        return try self.dev.allocateMemory(&.{
+            .allocation_size = requirements.size,
+            .memory_type_index = try self.findMemoryTypeIndex(requirements.memory_type_bits, flags),
+        }, null);
     }
 };
 
