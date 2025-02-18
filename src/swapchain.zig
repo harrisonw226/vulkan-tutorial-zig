@@ -179,6 +179,7 @@ pub const Swapchain = struct {
         );
         std.mem.swap(vk.Semaphore, &self.swap_images[result.image_index].image_acquired, &self.next_image_acquired);
         self.image_index = result.image_index;
+        // std.log.info("frame: {d}", .{self.image_index});
 
         return switch (result.result) {
             .success => .optimal,
@@ -189,13 +190,16 @@ pub const Swapchain = struct {
 };
 
 const SwapImage = struct {
+    allocator: Allocator,
     image: vk.Image,
     view: vk.ImageView,
     image_acquired: vk.Semaphore,
     render_finished: vk.Semaphore,
     frame_fence: vk.Fence,
+    command_pool: vk.CommandPool,
+    //command_buffer: vk.CommandBuffer,
 
-    fn init(gc: *const GraphicsContext, image: vk.Image, format: vk.Format) !SwapImage {
+    fn init(gc: *const GraphicsContext, image: vk.Image, format: vk.Format, allocator: Allocator) !SwapImage {
         const view = try gc.dev.createImageView(&.{
             .image = image,
             .view_type = .@"2d",
@@ -221,12 +225,20 @@ const SwapImage = struct {
         const frame_fence = try gc.dev.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
         errdefer gc.dev.destroyFence(frame_fence, null);
 
+        const command_pool = try gc.dev.createCommandPool(&.{
+            .flags = .{ .reset_command_buffer_bit = true },
+            .queue_family_index = gc.graphics_queue.family,
+        }, null);
+        errdefer gc.dev.destroyCommandPool(command_pool, null);
+
         return SwapImage{
+            .allocator = allocator,
             .image = image,
             .view = view,
             .image_acquired = image_acquired,
             .render_finished = render_finished,
             .frame_fence = frame_fence,
+            .command_pool = command_pool,
         };
     }
 
@@ -236,6 +248,7 @@ const SwapImage = struct {
         gc.dev.destroySemaphore(self.image_acquired, null);
         gc.dev.destroySemaphore(self.render_finished, null);
         gc.dev.destroyFence(self.frame_fence, null);
+        gc.dev.destroyCommandPool(self.command_pool, null);
     }
 
     fn waitForFence(self: SwapImage, gc: *const GraphicsContext) !void {
@@ -255,7 +268,7 @@ fn initSwapchainImages(gc: *const GraphicsContext, swapchain: vk.SwapchainKHR, f
     errdefer for (swap_images[0..i]) |si| si.deinit(gc);
 
     for (images) |image| {
-        swap_images[i] = try SwapImage.init(gc, image, format);
+        swap_images[i] = try SwapImage.init(gc, image, format, allocator);
         i += 1;
     }
     return swap_images;
