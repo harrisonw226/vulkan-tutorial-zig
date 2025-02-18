@@ -14,10 +14,13 @@ const apis: []const vk.ApiInfo = &.{
         },
         .instance_commands = .{
             .createDevice = true,
+            .getPhysicalDeviceFeatures2 = true,
         },
     },
     // Or you can add entire feature sets or extensions
     vk.features.version_1_0,
+    vk.features.version_1_2,
+    vk.features.version_1_3,
     vk.extensions.khr_surface,
     vk.extensions.khr_swapchain,
     vk.extensions.ext_debug_utils,
@@ -259,11 +262,29 @@ fn initialiseCandidate(instance: Instance, candidate: DeviceCandidate) !vk.Devic
     else
         2;
 
+    const features = vk.PhysicalDeviceFeatures{};
+
+    var features13 = vk.PhysicalDeviceVulkan13Features{
+        .synchronization_2 = vk.TRUE,
+        .dynamic_rendering = vk.TRUE,
+    };
+
+    var features12 = vk.PhysicalDeviceVulkan12Features{
+        .p_next = &features13,
+        .descriptor_indexing = vk.TRUE,
+        .buffer_device_address = vk.TRUE,
+    };
+    var features2 = vk.PhysicalDeviceFeatures2{
+        .features = features,
+        .p_next = &features12,
+    };
+
     return try instance.createDevice(candidate.pdev, &.{
         .queue_create_info_count = queue_count,
         .p_queue_create_infos = &qci,
         .enabled_extension_count = required_device_extensions.len,
         .pp_enabled_extension_names = @ptrCast(&required_device_extensions),
+        .p_next = &features2,
     }, null);
 }
 
@@ -287,6 +308,11 @@ fn checkSuitable(instance: Instance, pdev: vk.PhysicalDevice, allocator: Allocat
 
     if (!try checkSurfaceSupport(instance, pdev, surface)) {
         std.log.err("missing surface support", .{});
+        return null;
+    }
+
+    if (!try checkFeatureSupport(instance, pdev)) {
+        std.log.err("missing feature support", .{});
         return null;
     }
 
@@ -350,6 +376,9 @@ fn checkSurfaceSupport(instance: Instance, pdev: vk.PhysicalDevice, surface: vk.
 fn checkExtensionSupport(instance: Instance, pdev: vk.PhysicalDevice, allocator: Allocator) !bool {
     const propsv = try instance.enumerateDeviceExtensionPropertiesAlloc(pdev, null, allocator);
     defer allocator.free(propsv);
+    for (propsv) |props| {
+        std.log.info("props: {s}", .{props.extension_name});
+    }
 
     for (required_device_extensions) |ext| {
         for (propsv) |props| {
@@ -360,6 +389,36 @@ fn checkExtensionSupport(instance: Instance, pdev: vk.PhysicalDevice, allocator:
             return false;
         }
     }
+    return true;
+}
+
+fn checkFeatureSupport(instance: Instance, pdev: vk.PhysicalDevice) !bool {
+    const features = vk.PhysicalDeviceFeatures{};
+
+    var features2 = vk.PhysicalDeviceFeatures2{ .features = features };
+
+    var features12 = vk.PhysicalDeviceVulkan12Features{};
+    var features13 = vk.PhysicalDeviceVulkan13Features{};
+
+    features2.p_next = &features12;
+    features12.p_next = &features13;
+
+    instance.getPhysicalDeviceFeatures2(pdev, &features2);
+
+    const fields12 = @typeInfo((vk.PhysicalDeviceVulkan12Features)).@"struct".fields;
+
+    inline for (fields12) |field| {
+        std.log.info("features 1.2 {s}: {any}", .{ field.name, @field(features12, field.name) });
+    }
+    const fields13 = @typeInfo((vk.PhysicalDeviceVulkan13Features)).@"struct".fields;
+
+    inline for (fields13) |field| {
+        std.log.info("features 1.3 {s}: {any}", .{ field.name, @field(features13, field.name) });
+    }
+    if (features12.buffer_device_address != vk.TRUE or features12.descriptor_indexing != vk.TRUE or features13.dynamic_rendering != vk.TRUE or features13.synchronization_2 != vk.TRUE) {
+        return false;
+    }
+
     return true;
 }
 

@@ -183,6 +183,7 @@ pub fn main() !void {
         if (state == .suboptimal or extent.width != @as(u32, @intCast(w)) or extent.height != @as(u32, @intCast(h))) {
             extent.width = @intCast(w);
             extent.height = @intCast(h);
+            try gc.dev.deviceWaitIdle();
             try swapchain.recreate(extent);
 
             destroyFramebuffers(&gc, allocator, framebuffers);
