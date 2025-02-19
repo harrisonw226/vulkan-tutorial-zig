@@ -135,7 +135,7 @@ pub const Swapchain = struct {
         return &self.swap_images[self.image_index];
     }
 
-    pub fn present(self: *Swapchain, cmdbuf: vk.CommandBuffer) !PresentState {
+    pub fn present(self: *Swapchain, frame: u64) !PresentState {
         // 1) Wait for and reset fence of current image
         // 2) Submit command buffer, signalling fence of current image and dependent on
         //    the semaphore signalled by step 4.
@@ -149,24 +149,49 @@ pub const Swapchain = struct {
         try current.waitForFence(self.gc);
         try self.gc.dev.resetFences(1, @ptrCast(&current.frame_fence));
 
-        // Step 2: Submit the command buffer
-        const wait_stage = [_]vk.PipelineStageFlags{.{ .top_of_pipe_bit = true }};
-        try self.gc.dev.queueSubmit(self.gc.graphics_queue.handle, 1, &[_]vk.SubmitInfo{.{
-            .wait_semaphore_count = 1,
-            .p_wait_semaphores = @ptrCast(&current.image_acquired),
-            .p_wait_dst_stage_mask = &wait_stage,
-            .command_buffer_count = 1,
-            .p_command_buffers = @ptrCast(&cmdbuf),
-            .signal_semaphore_count = 1,
-            .p_signal_semaphores = @ptrCast(&current.render_finished),
-        }}, current.frame_fence);
+        try self.gc.dev.resetCommandBuffer(current.command_buffer.*, .{});
 
-        // Step 3: Present the current frame
+        try self.gc.dev.beginCommandBuffer(current.command_buffer.*, &.{
+            .flags = .{
+                .one_time_submit_bit = true,
+            },
+        });
+
+        transitionImage(self.gc, current.command_buffer.*, current.image, vk.ImageLayout.undefined, vk.ImageLayout.general);
+
+        const colour: f32 = @abs(@sin(@as(f32, @floatFromInt(frame / 120))));
+
+        const clear_value = vk.ClearColorValue{
+            .float_32 = .{ 0, 0, colour, 1 },
+        };
+
+        const clear_range = vk.ImageSubresourceRange{
+            .aspect_mask = vk.ImageAspectFlags{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = vk.REMAINING_MIP_LEVELS,
+            .base_array_layer = 0,
+            .layer_count = vk.REMAINING_ARRAY_LAYERS,
+        };
+
+        self.gc.dev.cmdClearColorImage(current.command_buffer.*, current.image, vk.ImageLayout.general, &clear_value, 1, @ptrCast(&clear_range));
+
+        transitionImage(self.gc, current.command_buffer.*, current.image, vk.ImageLayout.general, vk.ImageLayout.present_src_khr);
+
+        try self.gc.dev.endCommandBuffer(current.command_buffer.*);
+
+        const cmd_info = commandBufferSubmitInfo(current.command_buffer.*);
+        const wait_info = semaphoreSubmitInfo(current.image_acquired, vk.PipelineStageFlags2{ .color_attachment_output_bit = true });
+        const sig_info = semaphoreSubmitInfo(current.render_finished, vk.PipelineStageFlags2{ .all_graphics_bit = true });
+
+        const submit_info = submitInfo(&cmd_info, &sig_info, &wait_info);
+
+        try self.gc.dev.queueSubmit2(self.gc.graphics_queue.handle, 1, @ptrCast(&submit_info), current.frame_fence);
+
         _ = try self.gc.dev.queuePresentKHR(self.gc.present_queue.handle, &.{
+            .p_swapchains = @ptrCast(&self.handle),
+            .swapchain_count = 1,
             .wait_semaphore_count = 1,
             .p_wait_semaphores = @ptrCast(&current.render_finished),
-            .swapchain_count = 1,
-            .p_swapchains = @ptrCast(&self.handle),
             .p_image_indices = @ptrCast(&self.image_index),
         });
 
@@ -197,7 +222,7 @@ const SwapImage = struct {
     render_finished: vk.Semaphore,
     frame_fence: vk.Fence,
     command_pool: vk.CommandPool,
-    //command_buffer: vk.CommandBuffer,
+    command_buffer: *vk.CommandBuffer,
 
     fn init(gc: *const GraphicsContext, image: vk.Image, format: vk.Format, allocator: Allocator) !SwapImage {
         const view = try gc.dev.createImageView(&.{
@@ -231,6 +256,16 @@ const SwapImage = struct {
         }, null);
         errdefer gc.dev.destroyCommandPool(command_pool, null);
 
+        const cmdbuf = try allocator.create(vk.CommandBuffer);
+        errdefer allocator.destroy(cmdbuf);
+
+        try gc.dev.allocateCommandBuffers(&.{
+            .command_pool = command_pool,
+            .level = .primary,
+            .command_buffer_count = 1,
+        }, @ptrCast(cmdbuf));
+        errdefer gc.dev.freeCommandBuffers(command_pool, 1, @ptrCast(cmdbuf));
+
         return SwapImage{
             .allocator = allocator,
             .image = image,
@@ -239,6 +274,7 @@ const SwapImage = struct {
             .render_finished = render_finished,
             .frame_fence = frame_fence,
             .command_pool = command_pool,
+            .command_buffer = cmdbuf,
         };
     }
 
@@ -248,6 +284,8 @@ const SwapImage = struct {
         gc.dev.destroySemaphore(self.image_acquired, null);
         gc.dev.destroySemaphore(self.render_finished, null);
         gc.dev.destroyFence(self.frame_fence, null);
+        gc.dev.freeCommandBuffers(self.command_pool, 1, @ptrCast(self.command_buffer));
+        self.allocator.destroy(self.command_buffer);
         gc.dev.destroyCommandPool(self.command_pool, null);
     }
 
@@ -314,4 +352,80 @@ fn findActualExtent(capabilities: vk.SurfaceCapabilitiesKHR, extent: vk.Extent2D
             .height = std.math.clamp(extent.height, capabilities.min_image_extent.height, capabilities.max_image_extent.height),
         };
     }
+}
+
+fn transitionImage(gc: *const GraphicsContext, cmd: vk.CommandBuffer, image: vk.Image, current_layout: vk.ImageLayout, new_layout: vk.ImageLayout) void {
+    const aspect_mask: vk.ImageAspectFlags = if (new_layout == vk.ImageLayout.depth_attachment_optimal)
+        vk.ImageAspectFlags{ .depth_bit = true }
+    else
+        vk.ImageAspectFlags{ .color_bit = true };
+
+    const subresource_range = vk.ImageSubresourceRange{
+        .aspect_mask = aspect_mask,
+        .base_mip_level = 0,
+        .level_count = vk.REMAINING_MIP_LEVELS,
+        .base_array_layer = 0,
+        .layer_count = vk.REMAINING_ARRAY_LAYERS,
+    };
+
+    const image_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{
+            .all_commands_bit = true,
+        },
+        .src_access_mask = .{
+            .memory_write_bit = true,
+        },
+        .dst_stage_mask = .{
+            .all_commands_bit = true,
+        },
+        .dst_access_mask = .{
+            .memory_write_bit = true,
+            .memory_read_bit = true,
+        },
+
+        .old_layout = current_layout,
+        .new_layout = new_layout,
+
+        .subresource_range = subresource_range,
+        .image = image,
+        .src_queue_family_index = 0,
+        .dst_queue_family_index = 0,
+    };
+
+    gc.dev.cmdPipelineBarrier2(cmd, &.{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&image_barrier),
+    });
+}
+
+fn semaphoreSubmitInfo(semaphore: vk.Semaphore, stage_mask: vk.PipelineStageFlags2) vk.SemaphoreSubmitInfo {
+    return vk.SemaphoreSubmitInfo{
+        .semaphore = semaphore,
+        .stage_mask = stage_mask,
+        .device_index = 0,
+        .value = 1,
+    };
+}
+
+fn commandBufferSubmitInfo(cmdbuf: vk.CommandBuffer) vk.CommandBufferSubmitInfo {
+    return vk.CommandBufferSubmitInfo{
+        .command_buffer = cmdbuf,
+        .device_mask = 0,
+    };
+}
+
+fn submitInfo(cmdbuf_info: *const vk.CommandBufferSubmitInfo, signal_semaphore_info: ?*const vk.SemaphoreSubmitInfo, wait_semaphore_info: ?*const vk.SemaphoreSubmitInfo) vk.SubmitInfo2 {
+    const wait_count: u32 = if (wait_semaphore_info == null) 0 else 1;
+    const signal_count: u32 = if (signal_semaphore_info == null) 0 else 1;
+
+    return vk.SubmitInfo2{
+        .wait_semaphore_info_count = wait_count,
+        .p_wait_semaphore_infos = @ptrCast(wait_semaphore_info),
+
+        .signal_semaphore_info_count = signal_count,
+        .p_signal_semaphore_infos = @ptrCast(signal_semaphore_info),
+
+        .command_buffer_info_count = 1,
+        .p_command_buffer_infos = @ptrCast(cmdbuf_info),
+    };
 }
